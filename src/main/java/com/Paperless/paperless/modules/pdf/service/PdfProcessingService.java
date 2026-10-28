@@ -20,6 +20,8 @@ import org.apache.poi.xwpf.usermodel.ParagraphAlignment;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.apache.poi.xwpf.usermodel.XWPFRun;
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.docx4j.Docx4J;
 import org.docx4j.openpackaging.packages.WordprocessingMLPackage;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTPPr;
@@ -30,6 +32,10 @@ import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTSectPr;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTTabStop;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTTabs;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.STTabJc;
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
 import org.springframework.stereotype.Service;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.encryption.AccessPermission;
@@ -37,6 +43,12 @@ import org.apache.pdfbox.pdmodel.encryption.StandardProtectionPolicy;
 import org.apache.pdfbox.rendering.PDFRenderer;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.apache.pdfbox.text.TextPosition;
+import org.apache.poi.xslf.usermodel.XMLSlideShow;
+import org.apache.poi.xslf.usermodel.XSLFSlide;
+
+import java.awt.Dimension;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -721,4 +733,236 @@ public class PdfProcessingService {
 		mar.setHeader(BigInteger.ZERO);
 		mar.setFooter(BigInteger.ZERO);
 	}
+	
+	
+	public byte[] convertExcelToPdf(String fileUrl) throws Exception {
+	    try (InputStream inputStream = new URL(fileUrl).openStream();
+	         Workbook workbook = new XSSFWorkbook(inputStream);
+	         PDDocument pdfDoc = new PDDocument();
+	         ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
+
+	        PDType1Font font = new PDType1Font(Standard14Fonts.FontName.HELVETICA);
+	        PDType1Font boldFont = new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD);
+
+	        float fontSize = 9f;
+	        float leading = 1.2f * fontSize;
+	        float margin = 40f;
+	        float rowHeight = 20f;
+
+	        for (int s = 0; s < workbook.getNumberOfSheets(); s++) {
+	            Sheet sheet = workbook.getSheetAt(s);
+	            if (sheet.getPhysicalNumberOfRows() == 0) continue;
+
+	            PDPage page = new PDPage(PDRectangle.A4);
+	            pdfDoc.addPage(page);
+
+	            float pageWidth = page.getMediaBox().getWidth() - 2 * margin;
+	            float startX = margin;
+	            float startY = page.getMediaBox().getHeight() - margin;
+	            float currentY = startY;
+
+	            PDPageContentStream cs = new PDPageContentStream(pdfDoc, page);
+
+	            // Find maximum number of columns across all rows
+	            int maxCols = 0;
+	            for (Row row : sheet) {
+	                if (row.getLastCellNum() > maxCols) {
+	                    maxCols = row.getLastCellNum();
+	                }
+	            }
+
+	            if (maxCols == 0) continue;
+	            float colWidth = pageWidth / maxCols;
+
+	            // Sheet Title Header
+	            cs.beginText();
+	            cs.setFont(boldFont, 14);
+	            cs.newLineAtOffset(startX, currentY);
+	            cs.showText("Sheet: " + sheet.getSheetName());
+	            cs.endText();
+	            currentY -= 30;
+
+	            for (Row row : sheet) {
+	                // Check page height boundary
+	                if (currentY - rowHeight < margin) {
+	                    cs.close();
+	                    page = new PDPage(PDRectangle.A4);
+	                    pdfDoc.addPage(page);
+	                    cs = new PDPageContentStream(pdfDoc, page);
+	                    currentY = startY;
+	                }
+
+	                for (int col = 0; col < maxCols; col++) {
+	                    Cell cell = row.getCell(col);
+	                    String cellValue = "";
+
+	                    if (cell != null) {
+	                        switch (cell.getCellType()) {
+	                            case STRING -> cellValue = cell.getStringCellValue();
+	                            case NUMERIC -> {
+	                                if (DateUtil.isCellDateFormatted(cell)) {
+	                                    cellValue = cell.getDateCellValue().toString();
+	                                } else {
+	                                    cellValue = String.valueOf(cell.getNumericCellValue());
+	                                }
+	                            }
+	                            case BOOLEAN -> cellValue = String.valueOf(cell.getBooleanCellValue());
+	                            case FORMULA -> cellValue = cell.getCellFormula();
+	                            default -> cellValue = "";
+	                        }
+	                    }
+
+	                    // Sanitize text for WinAnsiEncoding
+	                    cellValue = cellValue.replaceAll("[^\\x00-\\x7F\\xA0-\\xFF]", "").trim();
+
+	                    float cellX = startX + (col * colWidth);
+
+	                    // Draw Table Cell Grid Lines
+	                    cs.setStrokingColor(0.8f, 0.8f, 0.8f);
+	                    cs.addRect(cellX, currentY - rowHeight, colWidth, rowHeight);
+	                    cs.stroke();
+
+	                    // Render Cell Text inside grid bounds
+	                    if (!cellValue.isEmpty()) {
+	                        cs.beginText();
+	                        cs.setFont(font, fontSize);
+	                        cs.setNonStrokingColor(0.1f, 0.1f, 0.1f);
+	                        cs.newLineAtOffset(cellX + 5, currentY - 14);
+
+	                        // Truncate text if it exceeds cell width
+	                        if (font.getStringWidth(cellValue) / 1000 * fontSize > colWidth - 10) {
+	                            while (cellValue.length() > 3 && (font.getStringWidth(cellValue + "...") / 1000 * fontSize) > colWidth - 10) {
+	                                cellValue = cellValue.substring(0, cellValue.length() - 1);
+	                            }
+	                            cellValue += "...";
+	                        }
+
+	                        cs.showText(cellValue);
+	                        cs.endText();
+	                    }
+	                }
+	                currentY -= rowHeight;
+	            }
+	            cs.close();
+	        }
+
+	        pdfDoc.save(outputStream);
+	        return outputStream.toByteArray();
+	    }
+	}
+	
+	
+	public byte[] convertPdfToExcel(String fileUrl) throws Exception {
+	    if (fileUrl == null || !fileUrl.startsWith("https://res.cloudinary.com/")) {
+	        throw new IllegalArgumentException("Invalid file URL.");
+	    }
+	    byte[] pdfBytes = downloadWithLimit(fileUrl, MAX_PDF_BYTES);
+
+	    try (PDDocument pdfDoc = Loader.loadPDF(pdfBytes);
+	         Workbook workbook = new XSSFWorkbook();
+	         ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+
+	        int totalPages = pdfDoc.getNumberOfPages();
+
+	        for (int p = 1; p <= totalPages; p++) {
+	            LayoutStripper stripper = new LayoutStripper();
+	            stripper.setStartPage(p);
+	            stripper.setEndPage(p);
+	            stripper.getText(pdfDoc);
+
+	            List<Line> lines = buildLines(stripper);
+	            Sheet sheet = workbook.createSheet("Page " + p);
+
+	            int rowIndex = 0;
+	            for (Line line : lines) {
+	                Row excelRow = sheet.createRow(rowIndex++);
+	                int colIndex = 0;
+
+	                for (Piece piece : line.pieces) {
+	                    if (piece.tab) {
+	                        colIndex++; // Move to next column on tab boundary
+	                        continue;
+	                    }
+
+	                    String text = piece.text.trim();
+	                    if (!text.isEmpty()) {
+	                        Cell cell = excelRow.createCell(colIndex);
+
+	                        // Auto-detect numbers vs string values for Excel formatting
+	                        try {
+	                            double numVal = Double.parseDouble(text.replace(",", ""));
+	                            cell.setCellValue(numVal);
+	                        } catch (NumberFormatException e) {
+	                            cell.setCellValue(text);
+	                        }
+	                        colIndex++;
+	                    }
+	                }
+	            }
+
+	            // Auto-fit column widths
+	            if (rowIndex > 0 && sheet.getRow(0) != null) {
+	                int lastColIndex = sheet.getRow(0).getLastCellNum();
+	                for (int c = 0; c < lastColIndex; c++) {
+	                    sheet.autoSizeColumn(c);
+	                }
+	            }
+	        }
+
+	        workbook.write(out);
+	        return out.toByteArray();
+	    }
+	}
+	
+	
+	public byte[] convertPptxToPdf(String fileUrl) throws Exception {
+	    if (fileUrl == null || !fileUrl.startsWith("https://res.cloudinary.com/")) {
+	        throw new IllegalArgumentException("Invalid file URL.");
+	    }
+
+	    byte[] pptxBytes = downloadWithLimit(fileUrl, MAX_DOCX_BYTES);
+
+	    try (ByteArrayInputStream inputStream = new ByteArrayInputStream(pptxBytes);
+	         XMLSlideShow ppt = new XMLSlideShow(inputStream);
+	         PDDocument pdfDoc = new PDDocument();
+	         ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+
+	        Dimension pgsize = ppt.getPageSize();
+	        float width = (float) pgsize.getWidth();
+	        float height = (float) pgsize.getHeight();
+
+	        for (XSLFSlide slide : ppt.getSlides()) {
+	            BufferedImage img = new BufferedImage((int) width, (int) height, BufferedImage.TYPE_INT_RGB);
+	            Graphics2D graphics = img.createGraphics();
+
+	            // Enable high-quality anti-aliasing for text and shapes
+	            graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+	            graphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+	            graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+
+	            // Clear background
+	            graphics.setPaint(java.awt.Color.WHITE);
+	            graphics.fill(new java.awt.Rectangle(0, 0, (int) width, (int) height));
+
+	            // Render presentation slide onto Graphics2D buffer
+	            slide.draw(graphics);
+	            graphics.dispose();
+
+	            // Create PDF Page with slide dimensions
+	            PDRectangle pageRect = new PDRectangle(width, height);
+	            PDPage page = new PDPage(pageRect);
+	            pdfDoc.addPage(page);
+
+	            PDImageXObject pdImage = JPEGFactory.createFromImage(pdfDoc, img, 0.9f);
+
+	            try (PDPageContentStream contentStream = new PDPageContentStream(pdfDoc, page)) {
+	                contentStream.drawImage(pdImage, 0, 0, width, height);
+	            }
+	        }
+
+	        pdfDoc.save(out);
+	        return out.toByteArray();
+	    }
+	}
+	
 }

@@ -8,11 +8,14 @@ import com.Paperless.paperless.modules.pdf.dto.MergeRequest;
 import com.Paperless.paperless.modules.pdf.dto.PageManagementRequest;
 import com.Paperless.paperless.modules.pdf.dto.PageNumberRequest;
 import com.Paperless.paperless.modules.pdf.dto.PdfToDocxRequest;
+import com.Paperless.paperless.modules.pdf.dto.PdfToExcelRequest;
 import com.Paperless.paperless.modules.pdf.dto.PdfToImagesRequest;
+import com.Paperless.paperless.modules.pdf.dto.PptxToPdfRequest;
 import com.Paperless.paperless.modules.pdf.dto.RotateRequest;
 import com.Paperless.paperless.modules.pdf.dto.SplitRequest;
 import com.Paperless.paperless.modules.pdf.dto.WatermarkRequest;
 import com.Paperless.paperless.modules.pdf.dto.EncryptRequest;
+import com.Paperless.paperless.modules.pdf.dto.ExcelToPdfRequest;
 import com.Paperless.paperless.modules.pdf.service.PdfProcessingService;
 import com.Paperless.paperless.modules.storage.service.CloudinaryService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -311,6 +314,65 @@ public class PdfToolController {
             
             // Pass "docx" format so Cloudinary stores and serves it as a Word document
             String outputUrl = cloudinaryService.uploadBytes(docxBytes, "paperless_processed", "docx");
+
+            Map<String, String> response = new HashMap<>();
+            response.put("downloadUrl", outputUrl);
+            response.put("status", "SUCCESS");
+
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            Map<String, String> errorResponse = new HashMap<>();
+            errorResponse.put("error", e.getMessage());
+            errorResponse.put("status", "FAILED");
+            return ResponseEntity.internalServerError().body(errorResponse);
+        }
+    }
+    
+    
+    @PostMapping("/excel-to-pdf")
+    public ResponseEntity<Map<String, String>> convertExcelToPdf(@RequestBody ExcelToPdfRequest request) {
+        try {
+            byte[] pdfBytes = pdfProcessingService.convertExcelToPdf(request.getFileUrl());
+            String outputUrl = cloudinaryService.uploadBytes(pdfBytes, "paperless_processed");
+
+            Map<String, String> response = new HashMap<>();
+            response.put("downloadUrl", outputUrl);
+            response.put("status", "SUCCESS");
+
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            Map<String, String> errorResponse = new HashMap<>();
+            errorResponse.put("error", e.getMessage());
+            errorResponse.put("status", "FAILED");
+            return ResponseEntity.internalServerError().body(errorResponse);
+        }
+    }
+    
+    
+    @PostMapping("/pdf-to-excel")
+    public ResponseEntity<Map<String, String>> convertPdfToExcel(@RequestBody PdfToExcelRequest request) {
+        try {
+            byte[] excelBytes = pdfProcessingService.convertPdfToExcel(request.getFileUrl());
+            String outputUrl = cloudinaryService.uploadBytes(excelBytes, "paperless_processed", "xlsx");
+
+            Map<String, String> response = new HashMap<>();
+            response.put("downloadUrl", outputUrl);
+            response.put("status", "SUCCESS");
+
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            Map<String, String> errorResponse = new HashMap<>();
+            errorResponse.put("error", e.getMessage());
+            errorResponse.put("status", "FAILED");
+            return ResponseEntity.internalServerError().body(errorResponse);
+        }
+    }
+    
+    @PostMapping("/pptx-to-pdf")
+    public ResponseEntity<Map<String, String>> convertPptxToPdf(@RequestBody PptxToPdfRequest request) {
+        try {
+            byte[] pdfBytes = pdfProcessingService.convertPptxToPdf(request.getFileUrl());
+            String outputUrl = cloudinaryService.uploadBytes(pdfBytes, "paperless_processed");
 
             Map<String, String> response = new HashMap<>();
             response.put("downloadUrl", outputUrl);
