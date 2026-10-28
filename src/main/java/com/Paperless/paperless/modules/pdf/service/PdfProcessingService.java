@@ -1,10 +1,8 @@
 package com.Paperless.paperless.modules.pdf.service;
 
 import org.apache.pdfbox.Loader;
-import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.pdmodel.graphics.image.JPEGFactory;
 import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
-import org.apache.pdfbox.pdmodel.PDResources;
 import java.awt.image.BufferedImage;
 import org.apache.pdfbox.io.RandomAccessReadBuffer;
 import org.apache.pdfbox.multipdf.PDFMergerUtility;
@@ -12,30 +10,49 @@ import org.apache.pdfbox.multipdf.Splitter;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.font.PDFontDescriptor;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.apache.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState;
 import org.apache.pdfbox.util.Matrix;
+import org.apache.poi.xwpf.usermodel.LineSpacingRule;
+import org.apache.poi.xwpf.usermodel.ParagraphAlignment;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
+import org.apache.poi.xwpf.usermodel.XWPFRun;
 import org.docx4j.Docx4J;
 import org.docx4j.openpackaging.packages.WordprocessingMLPackage;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTPPr;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTPageMar;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTPageSz;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTRPr;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTSectPr;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTTabStop;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTTabs;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.STTabJc;
 import org.springframework.stereotype.Service;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.encryption.AccessPermission;
 import org.apache.pdfbox.pdmodel.encryption.StandardProtectionPolicy;
 import org.apache.pdfbox.rendering.PDFRenderer;
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
-import java.net.URL;
-import java.util.List;
-import java.util.concurrent.Semaphore;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
+import org.apache.pdfbox.text.PDFTextStripper;
+import org.apache.pdfbox.text.TextPosition;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.math.BigInteger;
+import java.net.URL;
 import java.net.URLConnection;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 import javax.imageio.ImageIO;
 
 @Service
@@ -47,7 +64,6 @@ public class PdfProcessingService {
 
 		for (String urlString : fileUrls) {
 			try (InputStream inputStream = new URL(urlString).openStream()) {
-				// Apache PDFBox 3.x requires RandomAccessReadBuffer instead of raw InputStream
 				byte[] bytes = inputStream.readAllBytes();
 				merger.addSource(new RandomAccessReadBuffer(bytes));
 			}
@@ -78,7 +94,6 @@ public class PdfProcessingService {
 			ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
 			resultDoc.save(outputStream);
 
-			// Clean up resources
 			for (PDDocument doc : splitDocuments) {
 				doc.close();
 			}
@@ -97,23 +112,18 @@ public class PdfProcessingService {
 				try (PDPageContentStream cs = new PDPageContentStream(document, page,
 						PDPageContentStream.AppendMode.APPEND, true, true)) {
 
-					// Set semi-transparent opacity (30%)
 					PDExtendedGraphicsState gs = new PDExtendedGraphicsState();
 					gs.setNonStrokingAlphaConstant(0.3f);
 					cs.setGraphicsStateParameters(gs);
 
 					cs.setFont(font, 50);
+					cs.setNonStrokingColor(0.588f, 0.588f, 0.588f);
 
-					// Fixed: PDFBox 3.x requires RGB values normalized between 0.0f and 1.0f
-					cs.setNonStrokingColor(0.588f, 0.588f, 0.588f); // Light Gray (150/255)
-
-					// Calculate center position
 					float pageWidth = page.getMediaBox().getWidth();
 					float pageHeight = page.getMediaBox().getHeight();
 					float textWidth = font.getStringWidth(watermarkText) / 1000 * 50;
 
 					cs.beginText();
-					// Rotate text 45 degrees diagonally across page center
 					cs.setTextMatrix(
 							Matrix.getRotateInstance(Math.toRadians(45), (pageWidth - textWidth) / 2, pageHeight / 2));
 					cs.showText(watermarkText);
@@ -128,270 +138,587 @@ public class PdfProcessingService {
 	}
 
 	public byte[] compressPdfFile(String fileUrl, String level) throws Exception {
-	    try (InputStream inputStream = new URL(fileUrl).openStream();
-	         PDDocument originalDoc = Loader.loadPDF(inputStream.readAllBytes())) {
+		try (InputStream inputStream = new URL(fileUrl).openStream();
+				PDDocument originalDoc = Loader.loadPDF(inputStream.readAllBytes())) {
 
-	        // Set DPI resolution and JPEG quality based on user choice
-	        float dpi = 150f;
-	        float imageQuality = 0.6f;
+			float dpi = 150f;
+			float imageQuality = 0.6f;
 
-	        if ("HIGH".equalsIgnoreCase(level)) {
-	            dpi = 96f;          // Extreme Compression: Low DPI & high JPEG compression
-	            imageQuality = 0.35f;
-	        } else if ("LOW".equalsIgnoreCase(level)) {
-	            dpi = 200f;         // Low Compression: High DPI & high image clarity
-	            imageQuality = 0.8f;
-	        }
+			if ("HIGH".equalsIgnoreCase(level)) {
+				dpi = 96f;
+				imageQuality = 0.35f;
+			} else if ("LOW".equalsIgnoreCase(level)) {
+				dpi = 200f;
+				imageQuality = 0.8f;
+			}
 
-	        PDFRenderer pdfRenderer = new PDFRenderer(originalDoc);
-	        PDDocument compressedDoc = new PDDocument();
+			PDFRenderer pdfRenderer = new PDFRenderer(originalDoc);
+			PDDocument compressedDoc = new PDDocument();
 
-	        for (int pageIndex = 0; pageIndex < originalDoc.getNumberOfPages(); pageIndex++) {
-	            // Render original page to image at specified DPI
-	            BufferedImage bim = pdfRenderer.renderImageWithDPI(pageIndex, dpi);
+			for (int pageIndex = 0; pageIndex < originalDoc.getNumberOfPages(); pageIndex++) {
+				BufferedImage bim = pdfRenderer.renderImageWithDPI(pageIndex, dpi);
+				PDImageXObject pdImage = JPEGFactory.createFromImage(compressedDoc, bim, imageQuality);
 
-	            // Create compressed JPEG image object
-	            PDImageXObject pdImage = JPEGFactory.createFromImage(compressedDoc, bim, imageQuality);
+				PDPage originalPage = originalDoc.getPage(pageIndex);
+				PDRectangle mediaBox = originalPage.getMediaBox();
+				PDPage newPage = new PDPage(mediaBox);
+				compressedDoc.addPage(newPage);
 
-	            // Create new page matching original page dimensions
-	            PDPage originalPage = originalDoc.getPage(pageIndex);
-	            PDRectangle mediaBox = originalPage.getMediaBox();
-	            PDPage newPage = new PDPage(mediaBox);
-	            compressedDoc.addPage(newPage);
+				try (PDPageContentStream contentStream = new PDPageContentStream(compressedDoc, newPage)) {
+					contentStream.drawImage(pdImage, 0, 0, mediaBox.getWidth(), mediaBox.getHeight());
+				}
+			}
 
-	            // Draw compressed image across the page
-	            try (PDPageContentStream contentStream = new PDPageContentStream(compressedDoc, newPage)) {
-	                contentStream.drawImage(pdImage, 0, 0, mediaBox.getWidth(), mediaBox.getHeight());
-	            }
-	        }
+			ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+			compressedDoc.save(outputStream);
+			compressedDoc.close();
 
-	        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-	        compressedDoc.save(outputStream);
-	        compressedDoc.close();
-
-	        return outputStream.toByteArray();
-	    }
+			return outputStream.toByteArray();
+		}
 	}
-	
+
 	public byte[] convertImagesToPdf(List<String> imageUrls) throws Exception {
-	    try (PDDocument document = new PDDocument()) {
-	        for (String urlString : imageUrls) {
-	            try (InputStream inputStream = new URL(urlString).openStream()) {
-	                BufferedImage bufferedImage = ImageIO.read(inputStream);
-	                if (bufferedImage == null) continue;
+		try (PDDocument document = new PDDocument()) {
+			for (String urlString : imageUrls) {
+				try (InputStream inputStream = new URL(urlString).openStream()) {
+					BufferedImage bufferedImage = ImageIO.read(inputStream);
+					if (bufferedImage == null)
+						continue;
 
-	                // Create page matching image dimensions
-	                PDRectangle pageRect = new PDRectangle(bufferedImage.getWidth(), bufferedImage.getHeight());
-	                PDPage page = new PDPage(pageRect);
-	                document.addPage(page);
+					PDRectangle pageRect = new PDRectangle(bufferedImage.getWidth(), bufferedImage.getHeight());
+					PDPage page = new PDPage(pageRect);
+					document.addPage(page);
 
-	                // Convert BufferedImage to PDFXObject
-	                PDImageXObject pdImage = JPEGFactory.createFromImage(document, bufferedImage, 0.85f);
+					PDImageXObject pdImage = JPEGFactory.createFromImage(document, bufferedImage, 0.85f);
 
-	                try (PDPageContentStream contentStream = new PDPageContentStream(document, page)) {
-	                    contentStream.drawImage(pdImage, 0, 0, bufferedImage.getWidth(), bufferedImage.getHeight());
-	                }
-	            }
-	        }
+					try (PDPageContentStream contentStream = new PDPageContentStream(document, page)) {
+						contentStream.drawImage(pdImage, 0, 0, bufferedImage.getWidth(), bufferedImage.getHeight());
+					}
+				}
+			}
 
-	        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-	        document.save(outputStream);
-	        return outputStream.toByteArray();
-	    }
+			ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+			document.save(outputStream);
+			return outputStream.toByteArray();
+		}
 	}
-	
+
 	public byte[] convertPdfToImagesZip(String fileUrl) throws Exception {
-	    try (InputStream inputStream = new URL(fileUrl).openStream();
-	         PDDocument document = Loader.loadPDF(inputStream.readAllBytes())) {
+		try (InputStream inputStream = new URL(fileUrl).openStream();
+				PDDocument document = Loader.loadPDF(inputStream.readAllBytes())) {
 
-	        PDFRenderer pdfRenderer = new PDFRenderer(document);
-	        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+			PDFRenderer pdfRenderer = new PDFRenderer(document);
+			ByteArrayOutputStream baos = new ByteArrayOutputStream();
 
-	        try (ZipOutputStream zos = new ZipOutputStream(baos)) {
-	            for (int page = 0; page < document.getNumberOfPages(); page++) {
-	                // Render page as high-quality image (300 DPI)
-	                BufferedImage bim = pdfRenderer.renderImageWithDPI(page, 150);
+			try (ZipOutputStream zos = new ZipOutputStream(baos)) {
+				for (int page = 0; page < document.getNumberOfPages(); page++) {
+					BufferedImage bim = pdfRenderer.renderImageWithDPI(page, 150);
 
-	                ByteArrayOutputStream imgBaos = new ByteArrayOutputStream();
-	                ImageIO.write(bim, "png", imgBaos);
+					ByteArrayOutputStream imgBaos = new ByteArrayOutputStream();
+					ImageIO.write(bim, "png", imgBaos);
 
-	                // Add entry into Zip stream
-	                ZipEntry entry = new ZipEntry("page_" + (page + 1) + ".png");
-	                zos.putNextEntry(entry);
-	                zos.write(imgBaos.toByteArray());
-	                zos.closeEntry();
-	            }
-	        }
+					ZipEntry entry = new ZipEntry("page_" + (page + 1) + ".png");
+					zos.putNextEntry(entry);
+					zos.write(imgBaos.toByteArray());
+					zos.closeEntry();
+				}
+			}
 
-	        return baos.toByteArray();
-	    }
+			return baos.toByteArray();
+		}
 	}
-	
+
 	public byte[] encryptPdfFile(String fileUrl, String userPassword, String ownerPassword) throws Exception {
-	    try (InputStream inputStream = new URL(fileUrl).openStream();
-	         PDDocument document = Loader.loadPDF(inputStream.readAllBytes())) {
+		try (InputStream inputStream = new URL(fileUrl).openStream();
+				PDDocument document = Loader.loadPDF(inputStream.readAllBytes())) {
 
-	        // Define access permissions (allow printing and reading)
-	        AccessPermission ap = new AccessPermission();
-	        ap.setCanPrint(true);
-	        ap.setCanExtractContent(true);
+			AccessPermission ap = new AccessPermission();
+			ap.setCanPrint(true);
+			ap.setCanExtractContent(true);
 
-	        // Fallback owner password to user password if not explicitly supplied
-	        String ownerPass = (ownerPassword != null && !ownerPassword.isBlank()) ? ownerPassword : userPassword;
+			String ownerPass = (ownerPassword != null && !ownerPassword.isBlank()) ? ownerPassword : userPassword;
 
-	        // Apply 128-bit AES encryption
-	        StandardProtectionPolicy spp = new StandardProtectionPolicy(ownerPass, userPassword, ap);
-	        spp.setEncryptionKeyLength(128);
-	        spp.setPermissions(ap);
+			StandardProtectionPolicy spp = new StandardProtectionPolicy(ownerPass, userPassword, ap);
+			spp.setEncryptionKeyLength(128);
+			spp.setPermissions(ap);
 
-	        document.protect(spp);
+			document.protect(spp);
 
-	        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-	        document.save(outputStream);
-	        return outputStream.toByteArray();
-	    }
+			ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+			document.save(outputStream);
+			return outputStream.toByteArray();
+		}
 	}
 
 	public byte[] decryptPdfFile(String fileUrl, String password) throws Exception {
-	    try (InputStream inputStream = new URL(fileUrl).openStream();
-	         // Pass the password directly into Loader.loadPDF
-	         PDDocument document = Loader.loadPDF(inputStream.readAllBytes(), password)) {
+		try (InputStream inputStream = new URL(fileUrl).openStream();
+				PDDocument document = Loader.loadPDF(inputStream.readAllBytes(), password)) {
 
-	        // Remove security restrictions
-	        document.setAllSecurityToBeRemoved(true);
+			document.setAllSecurityToBeRemoved(true);
 
-	        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-	        document.save(outputStream);
-	        return outputStream.toByteArray();
-	    }
+			ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+			document.save(outputStream);
+			return outputStream.toByteArray();
+		}
 	}
-	
-	
+
 	public byte[] rotatePdfPages(String fileUrl, int degrees) throws Exception {
-	    try (InputStream inputStream = new URL(fileUrl).openStream();
-	         PDDocument document = Loader.loadPDF(inputStream.readAllBytes())) {
+		try (InputStream inputStream = new URL(fileUrl).openStream();
+				PDDocument document = Loader.loadPDF(inputStream.readAllBytes())) {
 
-	        for (PDPage page : document.getPages()) {
-	            page.setRotation(page.getRotation() + degrees);
-	        }
+			for (PDPage page : document.getPages()) {
+				page.setRotation(page.getRotation() + degrees);
+			}
 
-	        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-	        document.save(outputStream);
-	        return outputStream.toByteArray();
-	    }
+			ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+			document.save(outputStream);
+			return outputStream.toByteArray();
+		}
 	}
 
 	public byte[] reorderOrDeletePages(String fileUrl, List<Integer> pageOrder) throws Exception {
-	    try (InputStream inputStream = new URL(fileUrl).openStream();
-	         PDDocument originalDoc = Loader.loadPDF(inputStream.readAllBytes());
-	         PDDocument newDoc = new PDDocument()) {
+		try (InputStream inputStream = new URL(fileUrl).openStream();
+				PDDocument originalDoc = Loader.loadPDF(inputStream.readAllBytes());
+				PDDocument newDoc = new PDDocument()) {
 
-	        int totalPages = originalDoc.getNumberOfPages();
+			int totalPages = originalDoc.getNumberOfPages();
 
-	        for (int pageNum : pageOrder) {
-	            // Convert 1-based index to 0-based index
-	            int pageIndex = pageNum - 1;
-	            if (pageIndex >= 0 && pageIndex < totalPages) {
-	                newDoc.importPage(originalDoc.getPage(pageIndex));
-	            }
-	        }
+			for (int pageNum : pageOrder) {
+				int pageIndex = pageNum - 1;
+				if (pageIndex >= 0 && pageIndex < totalPages) {
+					newDoc.importPage(originalDoc.getPage(pageIndex));
+				}
+			}
 
-	        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-	        newDoc.save(outputStream);
-	        return outputStream.toByteArray();
-	    }
+			ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+			newDoc.save(outputStream);
+			return outputStream.toByteArray();
+		}
 	}
-	
+
 	public byte[] addPageNumbers(String fileUrl, String position, String prefix) throws Exception {
-	    try (InputStream inputStream = new URL(fileUrl).openStream();
-	         PDDocument document = Loader.loadPDF(inputStream.readAllBytes())) {
+		try (InputStream inputStream = new URL(fileUrl).openStream();
+				PDDocument document = Loader.loadPDF(inputStream.readAllBytes())) {
 
-	        PDType1Font font = new PDType1Font(Standard14Fonts.FontName.HELVETICA);
-	        int totalPages = document.getNumberOfPages();
-	        String textPrefix = (prefix != null && !prefix.isBlank()) ? prefix : "Page ";
+			PDType1Font font = new PDType1Font(Standard14Fonts.FontName.HELVETICA);
+			int totalPages = document.getNumberOfPages();
+			String textPrefix = (prefix != null && !prefix.isBlank()) ? prefix : "Page ";
 
-	        for (int i = 0; i < totalPages; i++) {
-	            PDPage page = document.getPage(i);
-	            String pageText = textPrefix + (i + 1) + " of " + totalPages;
+			for (int i = 0; i < totalPages; i++) {
+				PDPage page = document.getPage(i);
+				String pageText = textPrefix + (i + 1) + " of " + totalPages;
 
-	            try (PDPageContentStream cs = new PDPageContentStream(
-	                    document, page, PDPageContentStream.AppendMode.APPEND, true, true)) {
+				try (PDPageContentStream cs = new PDPageContentStream(document, page,
+						PDPageContentStream.AppendMode.APPEND, true, true)) {
 
-	                cs.setFont(font, 10);
-	                cs.setNonStrokingColor(0.3f, 0.3f, 0.3f); // Dark Gray
+					cs.setFont(font, 10);
+					cs.setNonStrokingColor(0.3f, 0.3f, 0.3f);
 
-	                float stringWidth = font.getStringWidth(pageText) / 1000 * 10;
-	                float pageWidth = page.getMediaBox().getWidth();
-	                float pageHeight = page.getMediaBox().getHeight();
+					float stringWidth = font.getStringWidth(pageText) / 1000 * 10;
+					float pageWidth = page.getMediaBox().getWidth();
+					float pageHeight = page.getMediaBox().getHeight();
 
-	                float x = (pageWidth - stringWidth) / 2; // Default: BOTTOM_CENTER
-	                float y = 30; // Bottom margin
+					float x = (pageWidth - stringWidth) / 2;
+					float y = 30;
 
-	                if ("BOTTOM_RIGHT".equalsIgnoreCase(position)) {
-	                    x = pageWidth - stringWidth - 40;
-	                } else if ("TOP_CENTER".equalsIgnoreCase(position)) {
-	                    y = pageHeight - 30;
-	                }
+					if ("BOTTOM_RIGHT".equalsIgnoreCase(position)) {
+						x = pageWidth - stringWidth - 40;
+					} else if ("TOP_CENTER".equalsIgnoreCase(position)) {
+						y = pageHeight - 30;
+					}
 
-	                cs.beginText();
-	                cs.newLineAtOffset(x, y);
-	                cs.showText(pageText);
-	                cs.endText();
-	            }
-	        }
+					cs.beginText();
+					cs.newLineAtOffset(x, y);
+					cs.showText(pageText);
+					cs.endText();
+				}
+			}
 
-	        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-	        document.save(outputStream);
-	        return outputStream.toByteArray();
-	    }
+			ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+			document.save(outputStream);
+			return outputStream.toByteArray();
+		}
 	}
-	
-	// Max 5 MB .docx input (change to fit your plan)
+
+	// ===================== DOCX -> PDF (unchanged) =====================
+
 	private static final int MAX_DOCX_BYTES = 5 * 1024 * 1024;
+	private static final int MAX_PDF_BYTES = 10 * 1024 * 1024;
 
-	// Only 2 conversions can run at the same time (fair queue)
 	private static final Semaphore DOCX_LIMITER = new Semaphore(2, true);
-	
+
 	public byte[] convertDocxToPdf(String fileUrl) throws Exception {
-	    // 1. Validate the URL (only your Cloudinary files, https only)
-	    if (fileUrl == null || !fileUrl.startsWith("https://res.cloudinary.com/")) {
-	        throw new IllegalArgumentException("Invalid file URL.");
-	    }
+		if (fileUrl == null || !fileUrl.startsWith("https://res.cloudinary.com/")) {
+			throw new IllegalArgumentException("Invalid file URL.");
+		}
 
-	    // 2. Download with a size cap and timeouts (before taking a conversion slot)
-	    byte[] docxBytes = downloadWithLimit(fileUrl, MAX_DOCX_BYTES);
+		byte[] docxBytes = downloadWithLimit(fileUrl, MAX_DOCX_BYTES);
 
-	    // 3. Wait for a free slot; reject if the server is busy
-	    if (!DOCX_LIMITER.tryAcquire(30, TimeUnit.SECONDS)) {
-	        throw new IllegalStateException("Server is busy. Please try again in a moment.");
-	    }
+		if (!DOCX_LIMITER.tryAcquire(30, TimeUnit.SECONDS)) {
+			throw new IllegalStateException("Server is busy. Please try again in a moment.");
+		}
 
-	    try (ByteArrayInputStream inputStream = new ByteArrayInputStream(docxBytes);
-	         ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
+		try (ByteArrayInputStream inputStream = new ByteArrayInputStream(docxBytes);
+				ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
 
-	        WordprocessingMLPackage wordMLPackage = WordprocessingMLPackage.load(inputStream);
-	        Docx4J.toPDF(wordMLPackage, outputStream);
+			WordprocessingMLPackage wordMLPackage = WordprocessingMLPackage.load(inputStream);
+			Docx4J.toPDF(wordMLPackage, outputStream);
 
-	        return outputStream.toByteArray();
-	    } finally {
-	        DOCX_LIMITER.release();
-	    }
+			return outputStream.toByteArray();
+		} finally {
+			DOCX_LIMITER.release();
+		}
 	}
 
 	private byte[] downloadWithLimit(String urlString, int maxBytes) throws Exception {
-	    URLConnection conn = new URL(urlString).openConnection();
-	    conn.setConnectTimeout(10_000);
-	    conn.setReadTimeout(20_000);
+		URLConnection conn = new URL(urlString).openConnection();
+		conn.setConnectTimeout(10_000);
+		conn.setReadTimeout(20_000);
 
-	    try (InputStream in = conn.getInputStream()) {
-	        // Read at most maxBytes + 1 so we can detect oversize files without loading them fully
-	        byte[] data = in.readNBytes(maxBytes + 1);
-	        if (data.length > maxBytes) {
-	            throw new IllegalArgumentException(
-	                "File too large. Maximum allowed size is " + (maxBytes / (1024 * 1024)) + " MB.");
-	        }
-	        return data;
-	    }
+		try (InputStream in = conn.getInputStream()) {
+			byte[] data = in.readNBytes(maxBytes + 1);
+			if (data.length > maxBytes) {
+				throw new IllegalArgumentException(
+						"File too large. Maximum allowed size is " + (maxBytes / (1024 * 1024)) + " MB.");
+			}
+			return data;
+		}
 	}
-	
+
+	// ===================== PDF -> DOCX (layout-preserving) =====================
+
+	/** Collects every character with its position, font and color. */
+	private static class LayoutStripper extends PDFTextStripper {
+		final List<TextPosition> chars = new ArrayList<>();
+		final Map<TextPosition, Integer> colors = new IdentityHashMap<>();
+
+		LayoutStripper() throws IOException {
+			super();
+		}
+
+		@Override
+		protected void processTextPosition(TextPosition text) {
+			int rgb = 0;
+			try {
+				rgb = getGraphicsState().getNonStrokingColor().toRGB() & 0xFFFFFF;
+			} catch (Exception ignored) {
+			}
+			chars.add(text);
+			colors.put(text, rgb);
+		}
+	}
+
+	private static class Piece {
+		String text = "";
+		String font = "Calibri";
+		double size = 11;
+		boolean bold, italic, tab;
+		int rgb;
+		double x; // start x (used for tabs)
+
+		boolean sameStyle(Piece o) {
+			return !tab && !o.tab && font.equals(o.font) && Math.abs(size - o.size) < 0.1 && bold == o.bold
+					&& italic == o.italic && rgb == o.rgb;
+		}
+	}
+
+	private static class Line {
+		double y, minX = Double.MAX_VALUE, maxX = 0, maxSize = 0;
+		List<Piece> pieces = new ArrayList<>();
+		boolean hasTab;
+	}
+
+	public byte[] convertPdfToDocx(String fileUrl) throws Exception {
+		if (fileUrl == null || !fileUrl.startsWith("https://res.cloudinary.com/")) {
+			throw new IllegalArgumentException("Invalid file URL.");
+		}
+		byte[] pdfBytes = downloadWithLimit(fileUrl, MAX_PDF_BYTES);
+
+		try (PDDocument pdfDoc = Loader.loadPDF(pdfBytes);
+				XWPFDocument docx = new XWPFDocument();
+				ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+
+			int pageCount = pdfDoc.getNumberOfPages();
+			PDRectangle firstBox = pdfDoc.getPage(0).getMediaBox();
+			double pageW = firstBox.getWidth();
+			double pageH = firstBox.getHeight();
+
+			// 1. Extract and group characters into lines, page by page
+			List<List<Line>> pages = new ArrayList<>();
+			double leftM = Double.MAX_VALUE, rightEdge = 0, topM = Double.MAX_VALUE;
+
+			for (int p = 1; p <= pageCount; p++) {
+				LayoutStripper stripper = new LayoutStripper();
+				stripper.setStartPage(p);
+				stripper.setEndPage(p);
+				stripper.getText(pdfDoc); // drives the engine; we collect characters ourselves
+
+				List<Line> lines = buildLines(stripper);
+				pages.add(lines);
+
+				for (Line l : lines) {
+					leftM = Math.min(leftM, l.minX);
+					rightEdge = Math.max(rightEdge, l.maxX);
+				}
+				if (!lines.isEmpty()) {
+					Line first = lines.get(0);
+					topM = Math.min(topM, first.y - first.maxSize * 0.96);
+				}
+			}
+
+			if (leftM == Double.MAX_VALUE) {
+				throw new IllegalArgumentException(
+						"No selectable text found. Scanned or image-only PDFs are not supported.");
+			}
+
+			leftM = Math.max(10, leftM);
+			double rightM = Math.max(10, pageW - rightEdge);
+			topM = Math.max(10, topM);
+			double textW = pageW - leftM - rightM;
+
+			setPageLayout(docx, pageW, pageH, leftM, rightM, topM, 20);
+
+			// 2. Write paragraphs
+			for (int p = 0; p < pages.size(); p++) {
+				List<Line> lines = pages.get(p);
+				Line prev = null;
+				boolean firstOnPage = true;
+
+				for (Line line : lines) {
+					XWPFParagraph para = docx.createParagraph();
+					double lineH = line.maxSize * 1.2;
+
+					if (firstOnPage) {
+						if (p > 0)
+							para.setPageBreak(true);
+						para.setSpacingBefore(0);
+					} else {
+						double gap = line.y - prev.y;
+						int before = (int) Math.round(Math.max(0, Math.min(gap - lineH, 300)) * 20);
+						para.setSpacingBefore(before);
+					}
+					para.setSpacingAfter(0);
+					para.setSpacingBetween(lineH, LineSpacingRule.EXACT);
+
+					double leftOff = line.minX - leftM;
+					double rightOff = (pageW - rightM) - line.maxX;
+
+					if (!line.hasTab && leftOff > 10 && Math.abs(leftOff - rightOff) < 6) {
+						para.setAlignment(ParagraphAlignment.CENTER);
+					} else if (leftOff > 3) {
+						para.setIndentationLeft((int) Math.round(leftOff * 20));
+					}
+
+					writeRuns(para, line, leftM, textW, pageW - rightM);
+
+					prev = line;
+					firstOnPage = false;
+				}
+			}
+
+			docx.write(out);
+			return out.toByteArray();
+		}
+	}
+
+	private List<Line> buildLines(LayoutStripper stripper) {
+		List<TextPosition> chars = new ArrayList<>(stripper.chars);
+		chars.sort(Comparator.comparingDouble(TextPosition::getYDirAdj));
+
+		// Group by baseline
+		List<List<TextPosition>> groups = new ArrayList<>();
+		List<TextPosition> current = null;
+		double currentY = 0;
+		for (TextPosition t : chars) {
+			double tol = Math.max(2.0, t.getFontSizeInPt() * 0.4);
+			if (current == null || Math.abs(t.getYDirAdj() - currentY) > tol) {
+				current = new ArrayList<>();
+				groups.add(current);
+				currentY = t.getYDirAdj();
+			}
+			current.add(t);
+		}
+
+		List<Line> lines = new ArrayList<>();
+		for (List<TextPosition> group : groups) {
+			group.sort(Comparator.comparingDouble(TextPosition::getXDirAdj));
+			Line line = new Line();
+			double sumY = 0;
+			Piece last = null;
+			TextPosition prevChar = null;
+
+			for (TextPosition t : group) {
+				String u = t.getUnicode();
+				if (u == null || u.isEmpty())
+					continue;
+				boolean blank = u.isBlank();
+				if (blank && last == null)
+					continue; // skip leading spaces
+
+				double size = t.getFontSizeInPt();
+				Piece style = styleOf(t, stripper.colors.getOrDefault(t, 0));
+
+				if (prevChar != null) {
+					double gap = t.getXDirAdj() - (prevChar.getXDirAdj() + prevChar.getWidthDirAdj());
+					double refSize = Math.max(size, 1);
+					if (gap > refSize * 2.5 && !blank) {
+						Piece tab = new Piece();
+						tab.tab = true;
+						tab.x = t.getXDirAdj();
+						line.pieces.add(tab);
+						line.hasTab = true;
+						last = null;
+					} else if (gap > refSize * 0.15 && !blank && last != null && !last.text.endsWith(" ")) {
+						last.text += " ";
+					}
+				}
+
+				if (last != null && last.sameStyle(style)) {
+					last.text += u;
+				} else {
+					style.text = u;
+					style.x = t.getXDirAdj();
+					line.pieces.add(style);
+					last = style;
+				}
+
+				if (!blank) {
+					line.minX = Math.min(line.minX, t.getXDirAdj());
+					line.maxX = Math.max(line.maxX, t.getXDirAdj() + t.getWidthDirAdj());
+					line.maxSize = Math.max(line.maxSize, size);
+				}
+				sumY += t.getYDirAdj();
+				prevChar = t;
+			}
+
+			if (line.pieces.isEmpty() || line.minX == Double.MAX_VALUE)
+				continue;
+			line.y = sumY / group.size();
+			if (line.maxSize < 1)
+				line.maxSize = 11;
+
+			// Trim trailing spaces on last text piece
+			for (int i = line.pieces.size() - 1; i >= 0; i--) {
+				Piece pc = line.pieces.get(i);
+				if (pc.tab)
+					continue;
+				pc.text = pc.text.stripTrailing();
+				break;
+			}
+			lines.add(line);
+		}
+		return lines;
+	}
+
+	private Piece styleOf(TextPosition t, int rgb) {
+		Piece p = new Piece();
+		p.size = t.getFontSizeInPt();
+		p.rgb = rgb;
+
+		String rawName = t.getFont() != null && t.getFont().getName() != null ? t.getFont().getName() : "Calibri";
+		String lower = rawName.toLowerCase();
+		boolean bold = lower.contains("bold") || lower.contains("black") || lower.contains("heavy");
+		boolean italic = lower.contains("italic") || lower.contains("oblique");
+
+		try {
+			PDFontDescriptor fd = t.getFont().getFontDescriptor();
+			if (fd != null) {
+				if (fd.getFontWeight() >= 700)
+					bold = true;
+				if (fd.isItalic())
+					italic = true;
+			}
+		} catch (Exception ignored) {
+		}
+		p.bold = bold;
+		p.italic = italic;
+		p.font = cleanFontName(rawName);
+		return p;
+	}
+
+	private String cleanFontName(String name) {
+		int plus = name.indexOf('+');
+		if (plus == 6)
+			name = name.substring(7); // remove subset prefix like ABCDEF+
+		String family = name.split("[-,]")[0];
+		family = family.replaceAll("(PSMT|MT)$", "");
+		switch (family) {
+		case "TimesNewRoman":
+		case "TimesNewRomanPS":
+			return "Times New Roman";
+		case "Carlito":
+			return "Calibri";
+		case "LiberationSans":
+			return "Arial";
+		case "LiberationSerif":
+			return "Times New Roman";
+		case "CourierNew":
+			return "Courier New";
+		default:
+			return family.isBlank() ? "Calibri" : family;
+		}
+	}
+
+	private void writeRuns(XWPFParagraph para, Line line, double leftM, double textW, double rightEdge) {
+		// Tab stops: the last tab becomes a right tab if its text ends at the right
+		// margin
+		int tabCount = 0;
+		for (Piece pc : line.pieces)
+			if (pc.tab)
+				tabCount++;
+
+		if (tabCount > 0) {
+			CTPPr ppr = para.getCTP().isSetPPr() ? para.getCTP().getPPr() : para.getCTP().addNewPPr();
+			CTTabs tabs = ppr.addNewTabs();
+			int seen = 0;
+			for (Piece pc : line.pieces) {
+				if (!pc.tab)
+					continue;
+				seen++;
+				CTTabStop stop = tabs.addNewTab();
+				boolean isLast = seen == tabCount;
+				if (isLast && line.maxX >= rightEdge - 15) {
+					stop.setVal(STTabJc.RIGHT);
+					stop.setPos(BigInteger.valueOf(Math.round(textW * 20)));
+				} else {
+					stop.setVal(STTabJc.LEFT);
+					stop.setPos(BigInteger.valueOf(Math.round((pc.x - leftM) * 20)));
+				}
+			}
+		}
+
+		for (Piece pc : line.pieces) {
+			XWPFRun run = para.createRun();
+			if (pc.tab) {
+				run.addTab();
+				continue;
+			}
+			run.setText(pc.text);
+			run.setFontFamily(pc.font);
+			run.setBold(pc.bold);
+			run.setItalic(pc.italic);
+			run.setColor(String.format("%06X", pc.rgb));
+
+			CTRPr rpr = run.getCTR().isSetRPr() ? run.getCTR().getRPr() : run.getCTR().addNewRPr();
+			rpr.addNewSz().setVal(BigInteger.valueOf(Math.round(pc.size * 2))); // half-points
+		}
+	}
+
+	private void setPageLayout(XWPFDocument docx, double pageW, double pageH, double left, double right, double top,
+			double bottom) {
+		CTSectPr sect = docx.getDocument().getBody().isSetSectPr() ? docx.getDocument().getBody().getSectPr()
+				: docx.getDocument().getBody().addNewSectPr();
+
+		CTPageSz sz = sect.isSetPgSz() ? sect.getPgSz() : sect.addNewPgSz();
+		sz.setW(BigInteger.valueOf(Math.round(pageW * 20)));
+		sz.setH(BigInteger.valueOf(Math.round(pageH * 20)));
+
+		CTPageMar mar = sect.isSetPgMar() ? sect.getPgMar() : sect.addNewPgMar();
+		mar.setLeft(BigInteger.valueOf(Math.round(left * 20)));
+		mar.setRight(BigInteger.valueOf(Math.round(right * 20)));
+		mar.setTop(BigInteger.valueOf(Math.round(top * 20)));
+		mar.setBottom(BigInteger.valueOf(Math.round(bottom * 20)));
+		mar.setHeader(BigInteger.ZERO);
+		mar.setFooter(BigInteger.ZERO);
+	}
 }

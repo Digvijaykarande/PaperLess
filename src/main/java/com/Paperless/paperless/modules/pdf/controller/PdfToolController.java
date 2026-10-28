@@ -7,6 +7,7 @@ import com.Paperless.paperless.modules.pdf.dto.ImagesToPdfRequest;
 import com.Paperless.paperless.modules.pdf.dto.MergeRequest;
 import com.Paperless.paperless.modules.pdf.dto.PageManagementRequest;
 import com.Paperless.paperless.modules.pdf.dto.PageNumberRequest;
+import com.Paperless.paperless.modules.pdf.dto.PdfToDocxRequest;
 import com.Paperless.paperless.modules.pdf.dto.PdfToImagesRequest;
 import com.Paperless.paperless.modules.pdf.dto.RotateRequest;
 import com.Paperless.paperless.modules.pdf.dto.SplitRequest;
@@ -300,6 +301,27 @@ public class PdfToolController {
             response.put("error", "Conversion failed: " + e.getMessage());
             response.put("status", "FAILED");
             return ResponseEntity.internalServerError().body(response);
+        }
+    }
+    
+    @PostMapping("/pdf-to-docx")
+    public ResponseEntity<Map<String, String>> convertPdfToDocx(@RequestBody PdfToDocxRequest request) {
+        try {
+            byte[] docxBytes = pdfProcessingService.convertPdfToDocx(request.getFileUrl());
+            
+            // Pass "docx" format so Cloudinary stores and serves it as a Word document
+            String outputUrl = cloudinaryService.uploadBytes(docxBytes, "paperless_processed", "docx");
+
+            Map<String, String> response = new HashMap<>();
+            response.put("downloadUrl", outputUrl);
+            response.put("status", "SUCCESS");
+
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            Map<String, String> errorResponse = new HashMap<>();
+            errorResponse.put("error", e.getMessage());
+            errorResponse.put("status", "FAILED");
+            return ResponseEntity.internalServerError().body(errorResponse);
         }
     }
     
