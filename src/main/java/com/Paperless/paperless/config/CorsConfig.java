@@ -1,5 +1,5 @@
-package com.Paperless.paperless.config;
 
+package com.Paperless.paperless.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -12,13 +12,25 @@ public class CorsConfig {
     @Bean
     public WebMvcConfigurer corsConfigurer() {
         return new WebMvcConfigurer() {
+
             @Override
             public void addCorsMappings(CorsRegistry registry) {
-                registry.addMapping("/api/**")
-                        .allowedOriginPatterns("*") // Allows http://localhost:3000, file:// ('null'), and any local test origin
-                        .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+
+                registry.addMapping("/**")
+                        .allowedOrigins(
+                                "http://localhost:3000"
+                        )
+                        .allowedMethods(
+                                "GET",
+                                "POST",
+                                "PUT",
+                                "DELETE",
+                                "PATCH",
+                                "OPTIONS"
+                        )
                         .allowedHeaders("*")
-                        .allowCredentials(true);
+                        .allowCredentials(true)
+                        .maxAge(3600);
             }
         };
     }
